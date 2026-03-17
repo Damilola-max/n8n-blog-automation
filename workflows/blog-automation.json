@@ -1,0 +1,950 @@
+{
+  "name": "Blog Posting Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "randomstring",
+              "name": "platform_type",
+              "value": "={{ $json.posts[0].platform_type }}",
+              "type": "string"
+            },
+            {
+              "id": "randomstring",
+              "name": "blog_post_id",
+              "value": "={{ $json.posts[0].blog_post_id }}",
+              "type": "string"
+            },
+            {
+              "id": "randomstring",
+              "name": "article_url",
+              "value": "={{ $json.posts[0].article_url }}",
+              "type": "string"
+            },
+            {
+              "id": "randomstring",
+              "name": "content_generated",
+              "value": "={{ $json.posts[0].content_generated }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -352,
+        -48
+      ],
+      "id": "randomstring",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "title": "={{ $json.title }}",
+        "additionalFields": {
+          "authorId": 1136,
+          "content": "={{ $json.content }}",
+          "slug": "={{ $json.title }}",
+          "status": "private",
+          "date": "={{ $now }}",
+          "format": "standard",
+          "categories": [
+            44
+          ],
+          "postTemplate": {
+            "values": {}
+          }
+        }
+      },
+      "id": "randomstring",
+      "name": "WordPress - Create Draft1",
+      "type": "n8n-nodes-base.wordpress",
+      "typeVersion": 1,
+      "position": [
+        -2816,
+        208
+      ],
+      "credentials": {
+        "wordpressApi": {
+          "id": "randomstring",
+          "name": "Wordpress account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\n\n/* ========== Helpers ========== */\nconst ensure = v => (v === null || v === undefined) ? '' : String(v);\nconst stripHtml = s => (s || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\nconst truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1).trim() + '…' : s);\n\n/* ========== Load & Basic Clean ========== */\nlet html = ensure(input.html || input.textAsHtml || '');\nlet text = ensure(input.text || stripHtml(html));\n\nhtml = html\n  .replace(/-{2,}\\s*Forwarded message\\s*-{2,}[\\s\\S]*?(From:|To:|Date:|Subject:)/gi, '')\n  .replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n  .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n  .replace(/<img[^>]*(tracking|pixel|spacer|tracker)[^>]*>/gi, '')\n  .replace(/<(p|div|span|br|strong|em)>\\s*<\\/\\1>/gi, '')\n  .replace(/(<br\\s*\\/?>\\s*){2,}/gi, '\\n\\n');\n\nif (!text || text.length < 10) text = stripHtml(html);\n\n/* ========== Signature & Footer Removal ========== */\nconst footerMarkers = [\n  /p:\\s*\\d{4}\\s*\\d{3}\\s*\\d{4}/i,\n  /a:\\s*1 Balloon Street, Manchester/i,\n  /e:\\s*hello@adrankone\\.com/i,\n  /w:\\s*adrankone\\.com/i,\n  /Registered in England and Wales/i,\n  /This e-?mail is confidential/i,\n  /Any views or opinions expressed/i,\n  /Vat Reg\\. No\\./i,\n  /Company Reg\\. No\\./i\n];\nconst signatureBlockPattern = /(\\s*p:\\s*\\d{4}\\s*\\d{3}\\s*\\d{4}[\\s\\S]*?adrankone\\.com\\s*)/gi;\n\nfunction stripFooter(str) {\n  let cleanStr = str.replace(signatureBlockPattern, '').trim();\n  let idx = -1;\n  footerMarkers.forEach(rx => {\n    const m = cleanStr.search(rx);\n    if (m >= 0 && (idx === -1 || m < idx)) idx = m;\n  });\n  return idx >= 0 ? cleanStr.slice(0, idx).trim() : cleanStr;\n}\n\nhtml = stripFooter(html);\ntext = stripFooter(text);\n\n/* ========== Title / Meta (USE EMAIL SUBJECT ONLY) ========== */\nconst subjectRaw = ensure(input.subject || input.Subject || '');\nconst title = subjectRaw || 'Untitled';\n\nconst slug = title.toLowerCase()\n  .replace(/<[^>]+>/g, '')\n  .replace(/[^a-z0-9\\s-]/g, '')\n  .trim()\n  .replace(/\\s+/g, '-')\n  .replace(/-+/g, '-')\n  .replace(/^-|-$/g, '');\n\nconst metaTitle = `${truncate(title, 70)} | FTUK`;\nconst metaDescription = truncate(stripHtml(text || html), 155);\n\n/* ========== Strip existing anchors ========== */\nfunction stripExistingAnchors(txt) {\n  return txt.replace(/<a\\b[^>]*>/gi, '').replace(/<\\/a>/gi, '');\n}\n\n/* ========== Normalize <URL> forms ========== */\nfunction normalizeAngleBracketUrls(txt) {\n  return txt.replace(/<((?:https?:\\/\\/|www\\.)[^>\\s]+)>/gi, '$1');\n}\n\n/* ========== Bullet segmentation ========== */\nfunction splitBlocks(raw) {\n  return raw.split(/\\n{2,}/).map(s => s.trim()).filter(Boolean);\n}\nlet blocks = splitBlocks(text);\n\n/* ====== Remove standalone dashes ====== */\nblocks = blocks.map(b => {\n  return b\n    .split('\\n')\n    .filter(line => !/^[-\\s]*$/.test(line)) // remove lines that are only '-' or whitespace\n    .join('\\n');\n});\n\n/* ========== Subheading detection ========== */\nfunction isSubheading(block) {\n  const trimmed = block.trim();\n  if (trimmed === title) return false;\n  if (/:$/.test(trimmed)) return true;\n  const words = trimmed.split(/\\s+/);\n  if (trimmed.length < 60 && /^[A-Z0-9\\s\\-\\(\\)']+$/.test(trimmed) && words.length < 7) return true;\n  if (/^[A-Z][a-z]/.test(trimmed) && words.length <= 7 && /:/.test(trimmed)) return true;\n  return false;\n}\n\n/* ========== Bullet normalization ========== */\nfunction expandBullets(block) {\n  const lines = block.split('\\n');\n  let out = [];\n  lines.forEach(line => {\n    let l = line.trim();\n    if (/^([-\\*\\.\\u2022])\\s+/.test(l) || /^\\d+\\.\\s+/.test(l)) {\n      l = l.replace(/^([-\\*\\.\\u2022]|\\d+\\.)\\s+/, '');\n      out.push('- ' + l);\n    } else {\n      out.push(l);\n    }\n  });\n  return out.join('\\n');\n}\n\n/* ========== URL Embedding (same as before) ========== */\nconst STOP_WORDS = new Set(['the', 'a', 'an', 'this', 'that', 'your', 'our', 'their', 'his', 'her', 'its', 'some', 'any']);\n\nfunction embedPhraseUrls(textContent) {\n  let txt = stripExistingAnchors(textContent);\n  txt = normalizeAngleBracketUrls(txt);\n  const urlRegex = /(?:https?:\\/\\/|www\\.)[^\\s<>\"')\\],]+/gi;\n  let result = '';\n  let lastIndex = 0;\n  let match;\n\n  while ((match = urlRegex.exec(txt)) !== null) {\n    const url = match[0];\n    const start = match.index;\n    const end = start + url.length;\n    const pre = txt.slice(lastIndex, start);\n    const phraseCandidate = findPhraseCandidate(pre);\n    const anchorText = phraseCandidate ? phraseCandidate.text : null;\n    let preSegment = pre;\n    if (anchorText) preSegment = pre.slice(0, phraseCandidate.startRel);\n    let href = url;\n    if (/^www\\./i.test(href)) href = 'https://' + href;\n    const display = url.length > 60 ? url.slice(0, 57) + '…' : url;\n    const anchor = `<a href=\"${href}\" target=\"_blank\" rel=\"noopener noreferrer\">${anchorText || display}</a>`;\n    result += preSegment + anchor;\n    lastIndex = end;\n  }\n  result += txt.slice(lastIndex);\n  return result;\n}\n\nfunction findPhraseCandidate(preText) {\n  const scopeStart = Math.max(0, preText.length - 160);\n  const scope = preText.slice(scopeStart);\n  let tokens = [];\n  let m;\n  const wordRegex = /[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g;\n  while ((m = wordRegex.exec(scope)) !== null) {\n    tokens.push({ word: m[0], start: m.index, end: m.index + m[0].length });\n  }\n  if (!tokens.length) return null;\n  const usable = tokens.slice(-3);\n  const phraseText = usable.map(t => t.word).join(' ');\n  if (phraseText.replace(/[\\W_]/g, '').length < 3) return null;\n  return { text: phraseText, startRel: usable[0].start };\n}\n\n/* ========== Build HTML Content ========== */\nconst h1Style = \"font-size:2.2rem;font-weight:700;margin-bottom:1.1rem;line-height:1.25;\";\nconst h2Style = \"font-size:1.3rem;font-weight:700;margin-top:1.35rem;margin-bottom:0.7rem;line-height:1.33;\";\nconst pStyle = \"font-size:1.08rem;line-height:1.5;margin-bottom:1.18rem;font-weight:400;\";\n\nlet contentHtml = `<h1 style=\"${h1Style}\"><strong>${title}</strong></h1>\\n\\n`;\n\nblocks.forEach(block => {\n  let b = block\n    .replace(/\\*\\*(.*?)\\*\\*/g, '$1')\n    .replace(/<strong>(.*?)<\\/strong>/gi, '$1')\n    .replace(/<b>(.*?)<\\/b>/gi, '$1')\n    .replace(/\\*(.*?)\\*/g, '<em>$1</em>')\n    .replace(/<i>(.*?)<\\/i>/gi, '<em>$1</em>');\n  b = b.replace(/([^\\n])\\n([^\\n])/g, '$1 $2');\n  b = expandBullets(b);\n  b = embedPhraseUrls(b);\n\n  if (/\\n?- /.test(b) && b.split('\\n').some(l => l.trim().startsWith('- '))) {\n    b.split('\\n').forEach(line => {\n      const trimmed = line.trim();\n      if (trimmed) contentHtml += `<p style=\"${pStyle}\">${trimmed}</p>\\n`;\n    });\n  } else if (isSubheading(b)) {\n    const head = b.replace(/:$/, '').trim();\n    contentHtml += `<h2 style=\"${h2Style}\"><strong>${head}</strong></h2>\\n`;\n  } else if (b !== title) {\n    contentHtml += `<p style=\"${pStyle}\">${b.trim()}</p>\\n`;\n  }\n});\n\ncontentHtml = contentHtml.replace(/\\n{3,}/g, '\\n\\n').trim();\n\n/* ========== Yoast JSON ========== */\nconst yoast_head_json = {\n  title,\n  description: metaDescription\n};\n\n/* ========== Return ========== */\nreturn {\n  json: {\n    slug,\n    title,\n    description: metaDescription,\n    content: contentHtml,\n    yoast_head_json,\n    meta_title: metaTitle,\n    meta_description: metaDescription\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2944,
+        208
+      ],
+      "id": "randomstring",
+      "name": "Code2"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "Label_randomstring"
+          ],
+          "readStatus": "read"
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_",
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -3536,
+        -80
+      ],
+      "id": "randomstring",
+      "name": "Gmail Trigger1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "randomstring",
+          "name": "Gmail account 2"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://ftuk.com/wp-json/wp/v2/posts/{{ $json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wordpressApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"meta\": {\n    \"_yoast_wpseo_metadesc\": \"{{ $node['Code2'].json.yoast_head_json.description }}\"\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2656,
+        208
+      ],
+      "id": "randomstring",
+      "name": "Yoast SEO Update1",
+      "credentials": {
+        "wordpressApi": {
+          "id": "randomstring",
+          "name": "Wordpress account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "issueKey": "={{ $('Merge').item.json.issueKey }}",
+        "additionalFields": {}
+      },
+      "name": "Check Issue Status1",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -1680,
+        208
+      ],
+      "id": "randomstring",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "notesInFlow": true,
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "randomstring",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.fields.status.name }}",
+              "value2": "PUSH"
+            }
+          ]
+        }
+      },
+      "name": "Status = PUSH?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1456,
+        208
+      ],
+      "id": "randomstring"
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "minutes"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1872,
+        208
+      ],
+      "id": "randomstring",
+      "name": "Wait1",
+      "webhookId": "randomstring"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://ftuk.com/wp-json/wp/v2/posts/{{ $('WordPress - Create Draft1').item.json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wordpressApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"featured_media\": {{ $json.id }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -832,
+        192
+      ],
+      "id": "randomstring",
+      "name": "Set Featured Image1",
+      "credentials": {
+        "wordpressApi": {
+          "id": "",
+          "name": "Wordpress account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ftuk.com/wp-json/wp/v2/media",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wordpressApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Disposition",
+              "value": "=attachment; filename= {{ $json.filename }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "={{ $json.mimeType }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1040,
+        192
+      ],
+      "id": "randomstringv",
+      "name": "Upload Image on WP1",
+      "credentials": {
+        "wordpressApi": {
+          "id": "randomstring",
+          "name": "Wordpress account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "issueAttachment",
+        "operation": "get",
+        "attachmentId": "={{ $('Check Issue Status1').item.json.fields.attachment[0].id }}",
+        "download": true
+      },
+      "id": "randomstring",
+      "name": "Get Attachment From Issue1",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -1232,
+        192
+      ],
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "randomstring",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "postId": "={{ $json.id }}",
+        "updateFields": {
+          "status": "publish",
+          "date": "={{ $json.modified }}"
+        }
+      },
+      "id": "randomstring",
+      "name": "WordPress - Publish1",
+      "type": "n8n-nodes-base.wordpress",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        192
+      ],
+      "credentials": {
+        "wordpressApi": {
+          "id": "randomstring",
+          "name": "Wordpress account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=# :bar_chart: Social Media Content Package: [Article Title]\n## :memo: Article Analysis Summary\n*Original Title:* [Article title]  \n*Word Count:* [Approximate count]  \n*Complexity Level:* [Beginner/Intermediate/Advanced]  \n*Target Audience:* [Specific audience segment]\n### Key Insights Extracted:\n- *Insight 1:* [Main takeaway]\n- *Insight 2:* [Supporting idea]\n- *Insight 3:* [Market implication]\n\n---\n\n# A) 6 x Social Media Posts\n## Post 1 - X (Twitter)\n*Platform:* X (Twitter) – 280 characters max  \n*Hook:* [First 50 characters that stop the scroll]  \n*Body:* [Core message – total ≤ 280 chars]  \n*CTA:* [Action prompt]  \n*Hashtags:* #FinanceTips #InvestSmart #WealthBuilding  \n*Visual Suggestion:* [Brief description]\n---\n## Post 2 - LinkedIn\n*Platform:* LinkedIn – 150–300 characters  \n*Hook:* [Professional grabber]  \n*Body:* [Insightful content]  \n*CTA:* [Engagement question]  \n*Hashtags:* #FinancialLiteracy #ProfessionalDevelopment #MarketInsights  \n*Visual Suggestion:* [Infographic or chart]\n---\n[Continue for Posts 3–6, alternating between X and LinkedIn]\n\n---\n\n# B) 4 x Instagram Carousel Slides\n*Theme:* [Overarching idea]  \n*Visual Style:* [Color palette, layout, tone]\n### Slide 1 - Title\n*Headline:* *[Main title]* *Subtext:* [Supporting line]  \n*Visuals:* [Suggestions]\n### Slide 2 - Key Concept\n*Main Point:* *[Teaching point]* *Supporting Points:* - [Example 1]  - [Example 2]  \n*Visuals:* [Diagram/chart suggestion]\n### Slide 3 - Deep Dive\n*Focus:* *[Expanded concept]* *Breakdown:* - [Step 1]  - [Step 2]  - [Step 3]  \n*Visuals:* [Infographic suggestion]\n### Slide 4 - CTA / Summary\n*Key Takeaway:* *[One memorable sentence]* *Action Step:* [Call to action]  \n*Engagement:* [Comment question]  \n*Visuals:* [CTA design idea]\n\n---\n\n# C) 2 x Community Polls\n## Poll 1 - YouTube\n*Context:* [Brief setup]  \n*Question:* *[Engaging financial question]* *Options:* - [Option 1]  - [Option 2]  - [Option 3]  - [Option 4]  \n*Follow-up:* [Planned post or insight from results]\n---\n## Poll 2 - LinkedIn\n*Context:* [Professional setup]  \n*Question:* *[Industry-relevant prompt]* *Options:* - [Option 1]  - [Option 2]  - [Option 3]  - [Option 4]  \n*Follow-up:* [How insights will be used]\n\n---\n\n# D) 4 x Live Stream Topics\n## Live Stream Topic 1\n*Title:* *[Compelling name]* *Duration:* 15–20 min  \n*Target Audience:* [Specific viewers]  \n*Synopsis:* [2–3 lines explaining the key learning and relevance]\n### Talking Points\n- *Opening Hook (0–1 min):* [Strong question or stat]  \n- *Context (1–3 min):* [Why it matters now]  \n- *Main (3–12 min):* - Point 1: [Detail]  - Point 2: [Example]  - Point 3: [Mistake to avoid]  \n- *Interactive (12–15 min):* [Audience Q&A]  \n- *Closing (15–20 min):* [CTA / recap]\n\n---\n\n# E) 2 x Short-Form Videos (30–60s)\n## Short Video 1\n*Title:* *[Catchy hook]* *Duration:* 45 sec  \n*Platform:* Reels / Shorts / TikTok  \n*Concept:* [1-sentence concept summary]\n### Script\n[0–3s] Hook: \"[Open with question]\"  \n[3–8s] Context: \"[Problem setup]\"  \n[8–20s] Main Content: \"[Key insight]\"  \n[20–30s] Example: \"[Scenario]\"  \n[30–40s] Application: \"[Action]\"  \n[40–45s] CTA: \"[Engagement question]\"\n\n---\n\n# Implementation Guide\n## Recommended Posting Schedule\n1. *Week 1:* - Monday: IG Carousel  - Tuesday: Poll 1  - Wednesday: X/LinkedIn Posts 1–2  - Thursday: Short Video 1  - Friday: Live Stream 1  \n2. *Week 2:* - Monday: X/LinkedIn Posts 3–4  - Tuesday: Poll 2  - Wednesday: Short Video 2  - Thursday: X/LinkedIn Posts 5–6  - Friday: Live Stream 2\n---\n## Quality Assurance Checklist\n- [ ] Financial data accurate  \n- [ ] Character limits respected  \n- [ ] Visual cues actionable  \n- [ ] Each section delivers standalone value  \n- [ ] Clear CTA in every post  \n- [ ] Relevant hashtag mix  \n- [ ] Balanced tone of authority and clarity  \n- [ ] Include disclaimers if necessary  \n---\n\n## FINAL JSON OUTPUT STRUCTURE (MANDATORY)\n\nThe AI must now wrap all the generated markdown content into a single JSON object.\n\nThe structure **must** be an array named `\"social_media_content\"`, where each element represents a distinct piece of content (including the Analysis/Guide summary) and uses the mandatory placeholder variables:\n\n```json\n{\n  \"social_media_content\": [\n    {\n      \"blog_post_id\": \"{{ $json.key }}\",\n      \"article_url\": \"{{ $('WordPress - Create Draft1').item.json.link }}\",\n      \"platform\": \"Article Analysis Summary\",\n      \"content\": \"[Generated Trello Markdown for Analysis Summary here]\"\n    },\n    {\n      \"blog_post_id\": \"{{ $json.key }}\",\n      \"article_url\": \"{{ $('WordPress - Create Draft1').item.json.link }}\",\n      \"platform\": \"X (Post 1)\",\n      \"content\": \"[Generated Trello Markdown for X Post 1 here]\"\n    },\n    // ... all other generated content pieces follow this exact structure, including distinct platform labels (e.g., 'Instagram Carousel', 'YouTube Poll', 'Implementation Guide') ...\n  ]\n}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -1088,
+        -48
+      ],
+      "id": "randomstring",
+      "name": "Message a model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "randomstring",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: Robust JSON extraction + repair + Trello formatting\n\nconst inputItem = $input.first().json;\n\n// Expect message.content\nif (!inputItem.message || typeof inputItem.message.content !== \"string\") {\n  return [{ json: { error: \"Input structure error: Expected 'message.content' string field.\" } }];\n}\n\nconst escapedContentString = inputItem.message.content;\n\n// ------------------------------\n// 1) Extract JSON block robustly\n// ------------------------------\nfunction extractJsonBlock(text) {\n  // Prefer ```json ... ``` but tolerate spacing/case and missing newline after json\n  const fenceMatch = text.match(/```json\\s*([\\s\\S]*?)\\s*```/i);\n  if (fenceMatch && fenceMatch[1]) return fenceMatch[1].trim();\n\n  // Fallback: try to locate an object that contains \"social_media_content\"\n  const idx = text.indexOf('\"social_media_content\"');\n  if (idx !== -1) {\n    // Find nearest \"{\" before it and attempt to slice a full JSON object by brace matching\n    const start = text.lastIndexOf(\"{\", idx);\n    if (start !== -1) {\n      let depth = 0;\n      for (let i = start; i < text.length; i++) {\n        const ch = text[i];\n        if (ch === \"{\") depth++;\n        else if (ch === \"}\") {\n          depth--;\n          if (depth === 0) return text.slice(start, i + 1).trim();\n        }\n      }\n    }\n  }\n\n  return null;\n}\n\n// -----------------------------------------------------\n// 2) Repair invalid JSON (control chars inside strings)\n// -----------------------------------------------------\nfunction escapeControlCharsInsideStrings(jsonText) {\n  // Walk char-by-char; when inside a \"...\" string, escape raw newlines/tabs/carriage returns\n  let out = \"\";\n  let inString = false;\n  let escaped = false;\n\n  for (let i = 0; i < jsonText.length; i++) {\n    const ch = jsonText[i];\n\n    if (!inString) {\n      if (ch === '\"') inString = true;\n      out += ch;\n      continue;\n    }\n\n    // inString === true\n    if (escaped) {\n      out += ch;\n      escaped = false;\n      continue;\n    }\n\n    if (ch === \"\\\\\") {\n      out += ch;\n      escaped = true;\n      continue;\n    }\n\n    if (ch === '\"') {\n      out += ch;\n      inString = false;\n      continue;\n    }\n\n    // The killers:\n    if (ch === \"\\n\") { out += \"\\\\n\"; continue; }\n    if (ch === \"\\r\") { out += \"\\\\r\"; continue; }\n    if (ch === \"\\t\") { out += \"\\\\t\"; continue; }\n\n    // Other control chars (0x00-0x1F) inside strings: escape as \\u00XX\n    const code = ch.charCodeAt(0);\n    if (code >= 0x00 && code <= 0x1F) {\n      out += \"\\\\u\" + code.toString(16).padStart(4, \"0\");\n      continue;\n    }\n\n    out += ch;\n  }\n\n  return out;\n}\n\nfunction removeTrailingCommas(jsonText) {\n  // Remove trailing commas before } or ]\n  return jsonText.replace(/,\\s*([}\\]])/g, \"$1\");\n}\n\nfunction safeParseJson(jsonText) {\n  // Try raw parse\n  try {\n    return { ok: true, value: JSON.parse(jsonText) };\n  } catch (e1) {\n    // Repair #1: escape control chars in strings\n    const repaired1 = escapeControlCharsInsideStrings(jsonText);\n    try {\n      return { ok: true, value: JSON.parse(repaired1) };\n    } catch (e2) {\n      // Repair #2: also remove trailing commas\n      const repaired2 = removeTrailingCommas(repaired1);\n      try {\n        return { ok: true, value: JSON.parse(repaired2) };\n      } catch (e3) {\n        return {\n          ok: false,\n          error: \"Failed to parse JSON after repairs.\",\n          details: {\n            raw_error: e1.message,\n            after_controlchar_repair: e2.message,\n            after_trailingcomma_repair: e3.message,\n          },\n          // Helpful debug (small slice only, so you can inspect without dumping massive content)\n          debug_snippet: jsonText.slice(Math.max(0, e1.position - 120), Math.min(jsonText.length, e1.position + 120)),\n        };\n      }\n    }\n  }\n}\n\n// -----------------------\n// 3) Parse nested JSON\n// -----------------------\nconst jsonBlock = extractJsonBlock(escapedContentString);\n\nif (!jsonBlock) {\n  return [{ json: { error: \"Could not find a JSON block (```json ... ```) or a JSON object containing social_media_content.\" } }];\n}\n\nconst parsed = safeParseJson(jsonBlock);\n\nif (!parsed.ok) {\n  return [{ json: { error: parsed.error, details: parsed.details, debug_snippet: parsed.debug_snippet } }];\n}\n\nconst parsedContentObject = parsed.value;\n\nif (!parsedContentObject || !Array.isArray(parsedContentObject.social_media_content)) {\n  return [{\n    json: {\n      error: \"Parsed JSON is valid, but missing expected array: social_media_content\",\n      keys_found: parsedContentObject ? Object.keys(parsedContentObject) : null,\n    }\n  }];\n}\n\nconst socialMediaContentArray = parsedContentObject.social_media_content;\n\n// -----------------------------------------\n// 4) Your Trello formatting function (kept)\n// -----------------------------------------\nfunction toTrelloFormat(content, platform) {\n  let output = String(content ?? \"\")\n    .replace(/\\\\n/g, \"\\n\")\n    .replace(/\\\\\"/g, '\"')\n    .trim();\n\n  const getField = (key) => {\n    const match = output.match(new RegExp(`\\\\*${key}:\\\\*\\\\s*(.*?)(?=\\\\n\\\\*|$)`, \"s\"));\n    return match ? match[1].trim() : \"\";\n  };\n\n  if (platform.includes(\"X\") || platform.includes(\"LinkedIn\")) {\n    const hook = getField(\"Hook\");\n    const body = getField(\"Body\");\n    const cta = getField(\"CTA\");\n    const hashtags = getField(\"Hashtags\");\n    const visual = getField(\"Visual Suggestion\");\n\n    output = `*Platform:* ${platform}\\n\\n`;\n    output += `*${hook}*\\n\\n`;\n    output += `${body}\\n\\n`;\n    output += `*Action:* ${cta}\\n`;\n    output += `*Visual:* ${visual}\\n`;\n    output += `*Tags:* ${hashtags}`;\n\n  } else if (platform.includes(\"Carousel\")) {\n    const theme = getField(\"Theme\");\n    const visualStyle = getField(\"Visual Style\");\n\n    output = `# Carousel Theme: *${theme}*\\n`;\n    output += `*Visual Style:* ${visualStyle}\\n\\n`;\n\n    const slideStart = String(content).indexOf(\"### Slide 1 - Title\");\n    if (slideStart !== -1) {\n      output += String(content)\n        .substring(slideStart)\n        .replace(/\\\\n/g, \"\\n\")\n        .replace(/\\\\\"/g, '\"');\n    }\n\n  } else if (platform.includes(\"Live Stream\")) {\n    const title = getField(\"Title\");\n    const duration = getField(\"Duration\");\n    const synopsis = getField(\"Synopsis\");\n\n    output = `# Live Stream: ${title}\\n`;\n    output += `*Duration:* ${duration}\\n`;\n    output += `*Synopsis:* ${synopsis}\\n\\n`;\n\n    const pointsStart = String(content).indexOf(\"### Talking Points\");\n    if (pointsStart !== -1) {\n      output += String(content)\n        .substring(pointsStart)\n        .replace(/\\\\n/g, \"\\n\")\n        .replace(/\\\\\"/g, '\"');\n    }\n  }\n\n  // Final universal cleanup\n  output = output\n    .replace(/\\*(Hook|Body|CTA|Hashtags|Visual Suggestion|Title|Duration|Synopsis|Platform|Context|Question|Options|Follow-up|Script|Concept):/g, \"\")\n    .trim();\n\n  return output;\n}\n\n// -----------------------\n// 5) Output flat objects\n// -----------------------\nconst finalOutput = [];\n\nfor (const contentPiece of socialMediaContentArray) {\n  const platform = String(contentPiece.platform ?? \"\");\n  const blogPostId = contentPiece.blog_post_id ?? null;\n  const articleUrl = contentPiece.article_url ?? null;\n\n  const trelloContent = toTrelloFormat(contentPiece.content, platform);\n\n  finalOutput.push({\n    json: {\n      platform_type: platform,\n      blog_post_id: blogPostId,\n      article_url: articleUrl,\n      content_generated: trelloContent,\n    },\n  });\n}\n\nreturn finalOutput;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        -48
+      ],
+      "id": "randomstring",
+      "name": "Code3"
+    },
+    {
+      "parameters": {
+        "listId": "randomstring",
+        "name": "={{ $json.platform_type }} - {{ $json.blog_post_id }}",
+        "description": "={{ $json.content_generated }}",
+        "additionalFields": {
+          "pos": "top",
+          "idMembers": "randomstring",
+          "urlSource": "={{ $json.article_url }}"
+        }
+      },
+      "type": "n8n-nodes-base.trello",
+      "typeVersion": 1,
+      "position": [
+        80,
+        -64
+      ],
+      "id": "randomstringrandomstring",
+      "name": "Create a card1",
+      "credentials": {
+        "trelloApi": {
+          "id": "randomstring",
+          "name": "Trello account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -160,
+        -48
+      ],
+      "id": "randomstring",
+      "name": "Loop Over Items1"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "issueKey": "={{ $json.key }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -1248,
+        -48
+      ],
+      "id": "randomstring",
+      "name": "Get an issue",
+      "retryOnFail": true,
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "randomstring",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "project": {
+          "__rl": true,
+          "value": "10042",
+          "mode": "list",
+          "cachedResultName": "BLOG POSTING"
+        },
+        "issueType": {
+          "__rl": true,
+          "value": "10068",
+          "mode": "list",
+          "cachedResultName": "Task"
+        },
+        "summary": "=POST ID: {{ $json.id }}",
+        "additionalFields": {
+          "description": "={{ $('Code2').item.json.content }} ",
+          "reporter": {
+            "__rl": true,
+            "value": "randomstring",
+            "mode": "list",
+            "cachedResultName": "damilola"
+          }
+        }
+      },
+      "id": "randomstring",
+      "name": "Create Jira Issue1",
+      "type": "n8n-nodes-base.jira",
+      "typeVersion": 1,
+      "position": [
+        -2512,
+        208
+      ],
+      "retryOnFail": true,
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "randomstring",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- Group Instagram Carousel + Short Videos into separate outputs ---\n\nconst inputItems = $input.all();\n\nlet instagram = [];\nlet shortVideos = [];\n\n// Go through every input item\nfor (const item of inputItems) {\n  const data = item.json;\n  const platform = (data.platform_type || '').toLowerCase();\n\n  if (platform.includes('instagram carousel')) {\n    instagram.push(data);\n  }\n\n  if (platform.includes('short video')) {\n    shortVideos.push(data);\n  }\n}\n\n// Prepare outputs\nconst outputs = [];\n\n// Output 1: Instagram Carousel JSON\nif (instagram.length > 0) {\n  outputs.push({\n    json: {\n      type: 'Instagram Carousel',\n      count: instagram.length,\n      posts: instagram\n    }\n  });\n}\n\n// Output 2: All Short Videos combined into a single JSON\nif (shortVideos.length > 0) {\n  // Combine content_generated of all short videos into one\n  const combinedContent = shortVideos.map(v => v.content_generated).join('\\n\\n');\n\n  outputs.push({\n    json: {\n      type: 'Short Videos',\n      count: shortVideos.length,\n      posts: [\n        {\n          platform_type: 'Short Videos',\n          blog_post_id: shortVideos[0].blog_post_id,\n          article_url: shortVideos[0].article_url,\n          content_generated: combinedContent\n        }\n      ]\n    }\n  });\n}\n\n// Return both as separate output items\nreturn outputs;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        -48
+      ],
+      "id": "randomstring",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ftuk.atlassian.net/rest/api/3/issue/{{ $json.issueKey }}/comment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "jiraSoftwareCloudApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"body\": {\n    \"type\": \"doc\",\n    \"version\": 1,\n    \"content\": [\n      {\n        \"type\": \"paragraph\",\n        \"content\": [\n          {\n            \"type\": \"text\",\n            \"text\": \"Hey \"\n          },\n          {\n            \"type\": \"inlineCard\",\n            \"attrs\": {\n              \"url\": \"https://ftuk.atlassian.net/jira/people/team/3c990ebf-abd5-4bb9-9173-f17b208ac129\"\n            }\n          },\n          {\n            \"type\": \"text\",\n            \"text\": \", please review this issue when you can.\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2208,
+        208
+      ],
+      "id": "randomstring",
+      "name": "HTTP Request",
+      "credentials": {
+        "jiraSoftwareCloudApi": {
+          "id": "randomstring",
+          "name": "Jira SW Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "Pull Content from email >> Create post in Wordpress >> Create Jira Issue",
+        "height": 288,
+        "width": 1232
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -3184,
+        128
+      ],
+      "typeVersion": 1,
+      "id": "randomstring",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "Wait and check if a the post is already pushed in Jira",
+        "height": 288,
+        "width": 624
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1920,
+        128
+      ],
+      "typeVersion": 1,
+      "id": "randomstring",
+      "name": "Sticky Note1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "Get attachment from Jira >> create feature image and wordpress >> attach image to post >> set post LIVE",
+        "height": 288,
+        "width": 832
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1328,
+        128
+      ],
+      "typeVersion": 1,
+      "id": "randomstring",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "Pick content from Jira >> create content",
+        "height": 192,
+        "width": 480
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1296,
+        -96
+      ],
+      "id": "randomstring",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "content": "Pick specific content to be dispatched",
+        "height": 192,
+        "width": 384
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -800,
+        -96
+      ],
+      "typeVersion": 1,
+      "id": "randomstring",
+      "name": "Sticky Note10"
+    },
+    {
+      "parameters": {
+        "content": "Create Trello Board with content ",
+        "height": 272,
+        "width": 704
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -400,
+        -96
+      ],
+      "typeVersion": 1,
+      "id": "randomstring",
+      "name": "Sticky Note11"
+    },
+    {
+      "parameters": {
+        "content": "This n8n workflow initiates when an approved email is received, cleans the content to create a draft post in WordPress and a corresponding Jira issue for review, then concurrently uses an AI model to generate and distribute social media content as Trello cards, finally waiting for a manual \"PUSH\" status change in Jira to trigger the publishing of the post.",
+        "height": 192,
+        "width": 368
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -3152,
+        -384
+      ],
+      "typeVersion": 1,
+      "id": "randomstring",
+      "name": "Sticky Note12"
+    },
+    {
+      "parameters": {
+        "mailbox": "Approved",
+        "format": "resolved",
+        "options": {
+          "forceReconnect": 60,
+          "trackLastMessageId": false
+        }
+      },
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [
+        -3104,
+        208
+      ],
+      "id": "randomstring",
+      "name": "Email Trigger (IMAP)2",
+      "credentials": {
+        "imap": {
+          "id": "randomstring",
+          "name": "IMAP account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "randomstring",
+              "name": "issueKey",
+              "value": "={{ $json.key }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2352,
+        208
+      ],
+      "id": "randomstring",
+      "name": "Persist Jira Key"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -2064,
+        208
+      ],
+      "id": "randomstring",
+      "name": "Merge"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WordPress - Create Draft1": {
+      "main": [
+        [
+          {
+            "node": "Yoast SEO Update1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code2": {
+      "main": [
+        [
+          {
+            "node": "WordPress - Create Draft1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger1": {
+      "main": [
+        []
+      ]
+    },
+    "Yoast SEO Update1": {
+      "main": [
+        [
+          {
+            "node": "Create Jira Issue1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Issue Status1": {
+      "main": [
+        [
+          {
+            "node": "Status = PUSH?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status = PUSH?1": {
+      "main": [
+        [
+          {
+            "node": "Get an issue",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Attachment From Issue1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait1": {
+      "main": [
+        [
+          {
+            "node": "Check Issue Status1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Featured Image1": {
+      "main": [
+        [
+          {
+            "node": "WordPress - Publish1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Image on WP1": {
+      "main": [
+        [
+          {
+            "node": "Set Featured Image1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Attachment From Issue1": {
+      "main": [
+        [
+          {
+            "node": "Upload Image on WP1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model1": {
+      "main": [
+        [
+          {
+            "node": "Code3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code3": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items1": {
+      "main": [
+        [
+          {
+            "node": "Create a card1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get an issue": {
+      "main": [
+        [
+          {
+            "node": "Message a model1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Jira Issue1": {
+      "main": [
+        [
+          {
+            "node": "Persist Jira Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WordPress - Publish1": {
+      "main": [
+        []
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Email Trigger (IMAP)2": {
+      "main": [
+        [
+          {
+            "node": "Code2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Jira Key": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "randomstring",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "randomstring"
+  },
+  "id": "randomstring",
+  "tags": []
+}
